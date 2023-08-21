@@ -1,0 +1,15 @@
+{
+	"manifest_version": 1,
+	"id": "joplin-plugin-book-of-hours",
+	"app_min_version": "2.11",
+	"version": "1.0.0",
+	"name": "Book Of Hours Plugin",
+	"description": "Be a true Librarian with easy copy/paste from the game Book Of Hours",
+	"author": "kazagistar",
+	"homepage_url": "",
+	"repository_url": "https://github.com/kazagistar/joplin-plugin-book-of-hours",
+	"keywords": ["integrations", "tags"],
+	"categories": [],
+	"screenshots": [],
+	"icons": { "48": "wist.png"}
+}
