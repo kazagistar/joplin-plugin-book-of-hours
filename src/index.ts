@@ -41,7 +41,7 @@ async function paginatedGet(path: Path, query?: any, page?: number): Promise<any
 	const fullQuery = {page, limit: 100, ...query};
 	const result = await joplin.data.get(path, fullQuery);
 	if (result.has_more) {
-		return result.items.concat(await paginatedGet(path, query));
+		return result.items.concat(await paginatedGet(path, query, page + 1));
 	} else {
 		return result.items;
 	}
@@ -118,7 +118,7 @@ async function linkingScan() {
 				body = parsed.body;
 			// if we have an un-influence, append it
 			} else if (uninfluenced.find((i: string) => i === parsed.title)) {
-				body += `\n\n*${parsed.title}\n\n${parsed.body}`;
+				body += `\n\n*${parsed.title}*\n\n${parsed.body}`;
 			// otherwise, its an influence that needs to be added
 			} else {
 				body = await addInfluence(body, parsed);
@@ -129,7 +129,7 @@ async function linkingScan() {
 			if (id) {
 				await joplin.data.put(['notes', id], null, {title, body});
 			} else {
-				const result = await joplin.data.post(['notes'], null, {title, body});
+				const result = await joplin.data.post(['notes'], null, {title, body, parent_id: parentId});
 				id = result.id;
 			}
 		});
@@ -199,11 +199,14 @@ interface Paste {
 // this functions splits it out, and ignores anything that looks "wrong" if a user forgets they had scanning on or whatever
 function splitRaw(raw: string): Paste | null {
 	const split = raw.split('\n');
-	if (split.length !== 3 || split[1] !== "") {
+	if (split.length < 3 || split[1] !== "") {
 		console.warn("Ignoring malformed clipboard", raw);
 		return null;
 	}
-	return { title: split[0], body: split[2] };
+	return {
+		title: split[0],
+		body: split.slice(2).join("\n"),
+	};
 }
 
 // pop up dialog window
@@ -271,7 +274,7 @@ joplin.plugins.register({
 			boh_uninfluenced: {
 				label: 'Ignored titles',
 				description: "Semicolon separated titles. These aren't actually influences, and will just be copy-pasted into the document directly",
-				value: "I've Read...;I'm Reading...;Scrutiny",
+				value: "I've Read...;I'm Reading...;The Letter Reads...",
 				type: SettingItemType.String,
 				advanced: true,
 				public: true,
