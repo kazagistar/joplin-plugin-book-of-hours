@@ -96,8 +96,8 @@ async function withNote(title: string, process: (note: Paste) => Promise<Paste>)
 	const cleanup = (input) => ({ title: input.title || '', body: input.body || '' });
 	const usingExistingNote = async (input) => {
 		const result = cleanup(await process(cleanup(input)));
-		await joplin.data.put(['notes', activeId], null, result);
 		activeId = input.id;
+		await joplin.data.put(['notes', activeId], null, result);
 	}
 	const usingNewNote = async (parent_id) => {
 		let result = cleanup(await process({ title: '', body: ''}));
@@ -110,7 +110,7 @@ async function withNote(title: string, process: (note: Paste) => Promise<Paste>)
 	}
 
 	if (activeId) {
-		let activeNote = await joplin.data.get(['notes', activeId], {fields: ['title', 'body']});
+		let activeNote = await joplin.data.get(['notes', activeId], {fields: ['title', 'body', 'id']});
 		if (activeNote) {
 			return await usingExistingNote(activeNote);
 		}
@@ -127,7 +127,7 @@ async function withNote(title: string, process: (note: Paste) => Promise<Paste>)
 		limit: 1,
 		fields: ['title', 'body', 'id'],
 	});
-	if (searchByTitle.items.length > 0) {
+	if (searchByTitle.items.length > 0 && searchByTitle.items[0].title === title) {
 		return await usingExistingNote(searchByTitle.items[0]); // #2
 	}
 	if (initialNote) {
@@ -148,37 +148,32 @@ async function withNote(title: string, process: (note: Paste) => Promise<Paste>)
 // first click is the card itself, the rest are influences to add as links to the card
 async function linkingScan() {
 	await rescan();
-	// Loop repeatedly runs the scan each time the user selectes another
-	while (true) {
-		const result = await clipboardScan(async (raw: string) => {
-			const parsed = splitRaw(raw);
-			if (!parsed) { return }
-			await withNote(parsed.title, async ({title, body}) => {
-				// if empty, fill it out
-				if (title === '') {
-					title = parsed.title
-					body = parsed.body;
-				// if the body is already in the note, dont paste, its just a duplicate click
-				} else if (body.includes(parsed.body)) {
-				// if the title is the same, append
-				} else if (title === parsed.title) {
-					body = `${body}\n\n${parsed.body}`
-				// if we have an un-influence, append
-				} else if (uninfluenced.find((i: string) => i === parsed.title)) {
-					body = `${body}\n\n*${parsed.title}*\n\n${parsed.body}`;
-				// otherwise, its an influence that needs to be added
-				} else {
-					body = await addInfluence(body, parsed);
-					await addTag(parsed.title)
-				}
-				return { title,  body };
-			});
+	const result = await clipboardScan(async (raw: string) => {
+		const parsed = splitRaw(raw);
+		if (!parsed) { return }
+		await withNote(parsed.title, async ({title, body}) => {
+			// if empty, fill it out
+			if (title === '') {
+				title = parsed.title
+				body = parsed.body;
+			// if the body is already in the note, dont paste, its just a duplicate click
+			} else if (body.includes(parsed.body)) {
+			// if the title is the same, append
+			} else if (title === parsed.title) {
+				body = `${body}\n\n${parsed.body}`
+			// if we have an un-influence, append
+			} else if (uninfluenced.find((i: string) => i === parsed.title)) {
+				body = `${body}\n\n*${parsed.title}*\n\n${parsed.body}`;
+			// otherwise, its an influence that needs to be added
+			} else {
+				body = await addInfluence(body, parsed);
+				await addTag(parsed.title)
+			}
+			return { title,  body };
 		});
-		activeId = null;
-		if (result !== 'yes') {
-			return;
-		}
-	}
+	});
+	joplin.commands.execute('openNote', activeId);
+	activeId = null;
 }
 
 async function addTag(tag: string) {
@@ -212,9 +207,7 @@ async function addInfluence(body: string, paste: Paste): Promise<string> {
 		// add if empty
 		return link;
 	}
-	console.info("togeather:", body);
 	let separated = INFLUENCE_RE.exec(body);
-	console.info("separated:", separated);
 	if (!separated) {
 		// prepend if no other influences found
 		return link + "\n\n" + body;
@@ -285,7 +278,7 @@ joplin.plugins.register({
 	onStart: async function() {
 		scanningPopup = await joplin.views.dialogs.create("book-of-hours-scanning-popup");
 		await joplin.views.dialogs.setHtml(scanningPopup, `<h2>Click the description, then all influences</h2>`);
-		await joplin.views.dialogs.setButtons(scanningPopup, [{id: 'no', title: 'Finished'}, {id: 'yes', title: 'Another'}]);
+		await joplin.views.dialogs.setButtons(scanningPopup, [{id: 'no', title: 'Finished'}]);
 		await joplin.commands.register(linkingScanCommand);
 		await joplin.views.toolbarButtons.create("boh-linking-scan", linkingScanCommand.name, ToolbarButtonLocation.NoteToolbar);
 		const CONFIG_SECTION = "book_of_hours";
