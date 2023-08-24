@@ -75,73 +75,113 @@ async function rescan() {
 	uninfluenced = (await joplin.settings.value('boh_uninfluenced')).split(';')
 }
 
+/**
+ * Gives the inner function a note based on a title, and then saves it afterwards
+ *
+ * State matchine progression is a bit of a clusterfuck, so hold on to your butts
+ * There are 2 types of call: starting, and continuing. aka, fetching our subject, and appending to it
+ * if starting, we have no note id. we need to pick the best note to start writing to, by priority
+ * 	1. selected and title is the same
+ *  2. title is the same
+ *  3. selected and title blank
+ *  4. newly created, in the same directory as selected note
+ *  5. newly created, in the selected folder
+ *  6. newly created wherever?
+ * 	if we are continuing, its much easier. we just grab the note and go
+ *
+ * so the return value is either an existing item, or just a maybe parent id for where to place the item when done
+ */
+let activeId: string | null = null;
+async function withNote(title: string, process: (note: Paste) => Promise<Paste>): Promise<void> {
+	const cleanup = (input) => ({ title: input.title || '', body: input.body || '' });
+	const usingExistingNote = async (input) => {
+		const result = cleanup(await process(cleanup(input)));
+		await joplin.data.put(['notes', activeId], null, result);
+		activeId = input.id;
+	}
+	const usingNewNote = async (parent_id) => {
+		let result = cleanup(await process({ title: '', body: ''}));
+		const created = await joplin.data.post(
+			['notes'],
+			null,
+			parent_id ? {parent_id, ...result} : result
+		);
+		activeId = created.id;
+	}
+
+	if (activeId) {
+		let activeNote = await joplin.data.get(['notes', activeId], {fields: ['title', 'body']});
+		if (activeNote) {
+			return await usingExistingNote(activeNote);
+		}
+		// if we cant find an existing active note, start from scratch
+	}
+
+	const initialNote = await joplin.workspace.selectedNote();
+	if (initialNote && initialNote.title === title) {
+		await usingExistingNote(initialNote); // #1
+	}
+	const searchByTitle = await joplin.data.get(['search'], {
+		query: title,
+		type:'note',
+		limit: 1,
+		fields: ['title', 'body', 'id'],
+	});
+	if (searchByTitle.items.length > 0) {
+		return await usingExistingNote(searchByTitle.items[0]); // #2
+	}
+	if (initialNote) {
+		if (initialNote.title === '' && (!initialNote.body || initialNote.body === '')) {
+			return await usingExistingNote(initialNote); // #3
+		} else if (initialNote.parent_id) {
+			return await usingNewNote(initialNote.parent_id); // #4
+		}
+	}
+	const initialFolder = await joplin.workspace.selectedFolder();
+	if (initialFolder) {
+		return await usingNewNote(initialFolder.parent_id); // #5
+	}
+	return await usingNewNote(null); // #6
+}
+
 // "main" function
 // first click is the card itself, the rest are influences to add as links to the card
 async function linkingScan() {
 	await rescan();
-	let id: string | null = null;
-	let parentId: string | null = null;
-	// If you have opened an empty note, fill that
-	// otherwise create a new note in whatever folder you have selected
-	{
-		const initialNote = await joplin.workspace.selectedNote();
-		if (initialNote) {
-			if (initialNote.title === '')
-				id = initialNote.id;
-			parentId = initialNote.parentId;
-		} else {
-			const initialParent = await joplin.workspace.selectedFolder();
-			if (initialParent)
-				parentId = initialParent.id;
-		}
-	}
 	// Loop repeatedly runs the scan each time the user selectes another
 	while (true) {
 		const result = await clipboardScan(async (raw: string) => {
 			const parsed = splitRaw(raw);
 			if (!parsed) { return }
-
-			// try to load the existing note title and body
-			let title: string, body: string;
-			if (id) {
-				let note = await joplin.data.get(['notes', id], {fields: ['title', 'body']});
-				title = note.title || '';
-				body = note.body || '';
-			} else {
-				title = '';
-				body = '';
-			}
-
-			// if empty, fill it out
-			if (title === '') {
-				title = parsed.title
-				body = parsed.body;
-			// if we have an un-influence, append it
-			} else if (uninfluenced.find((i: string) => i === parsed.title)) {
-				body += `\n\n*${parsed.title}*\n\n${parsed.body}`;
-			// otherwise, its an influence that needs to be added
-			} else {
-				body = await addInfluence(body, parsed);
-				await addTag(id, parsed.title)
-			}
-
-			// upsert changes
-			if (id) {
-				await joplin.data.put(['notes', id], null, {title, body});
-			} else {
-				const result = await joplin.data.post(['notes'], null, {title, body, parent_id: parentId});
-				id = result.id;
-			}
+			await withNote(parsed.title, async ({title, body}) => {
+				// if empty, fill it out
+				if (title === '') {
+					title = parsed.title
+					body = parsed.body;
+				// if the body is already in the note, dont paste, its just a duplicate click
+				} else if (body.includes(parsed.body)) {
+				// if the title is the same, append
+				} else if (title === parsed.title) {
+					body = `${body}\n\n${parsed.body}`
+				// if we have an un-influence, append
+				} else if (uninfluenced.find((i: string) => i === parsed.title)) {
+					body = `${body}\n\n*${parsed.title}*\n\n${parsed.body}`;
+				// otherwise, its an influence that needs to be added
+				} else {
+					body = await addInfluence(body, parsed);
+					await addTag(parsed.title)
+				}
+				return { title,  body };
+			});
 		});
+		activeId = null;
 		if (result !== 'yes') {
 			return;
-		} else {
-			id = null;
 		}
 	}
 }
 
-async function addTag(id: string, tag: string) {
+async function addTag(tag: string) {
 	let tagId = tags.get(tag);
 	if (!tagId) {
 		const tagSearch = await joplin.data.get(['search'], {query: tag, type:'tag'});
@@ -153,7 +193,7 @@ async function addTag(id: string, tag: string) {
 		}
 		tags.set(tag, tagId);
 	}
-	await joplin.data.post(["tags", tagId, "notes"], null, {id});
+	await joplin.data.post(["tags", tagId, "notes"], null, {id: activeId});
 }
 
 async function addInfluence(body: string, paste: Paste): Promise<string> {
